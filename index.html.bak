@@ -110,6 +110,7 @@
   // If you open this file directly via file://, browsers often block fetch for local paths. Prefer running a tiny local server.
   const DESIGN_TIME_ITEMS = [
   { name: "Rain In Canada", url: "./gallery/rain in canada.steg.png" },
+  { name: "She Moves", url: "./gallery/she moves.steg.png" },
   { name: "Wind Is In From Africa", url: "./gallery/wind is in from africa.steg.png" },
 ];
 
