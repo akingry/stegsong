@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StegSong</title>
+  <style>
+    :root{
+      --bg:#0b0e14; --panel:#121827; --panel2:#0f1523; --text:#e6e9ef; --muted:#a7b0c0;
+      --accent:#7aa2f7; --danger:#f7768e; --ok:#9ece6a; --border:#24304a;
+    }
+    body{margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--text);}
+    header{padding:18px 20px; border-bottom:1px solid var(--border); background:linear-gradient(180deg, #0b0e14, #090c12);}
+    header h1{font-size:16px; margin:0;}
+    header p{margin:6px 0 0; color:var(--muted); font-size:13px; line-height:1.35;}
+    main{max-width:1200px; margin:0 auto; padding:18px 20px 40px;}
+    .grid{display:grid; grid-template-columns: 1.1fr 0.9fr; gap:16px; align-items:start;}
+    .card{background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:14px;}
+    .card h2{font-size:14px; margin:0 0 10px;}
+    label{display:block; font-size:12px; color:var(--muted); margin:10px 0 6px;}
+    input[type=file], input[type=text]{width:100%; padding:10px; border-radius:12px; border:1px solid var(--border); background:var(--panel2); color:var(--text);}
+    button{background:var(--accent); color:#09101f; border:0; padding:10px 12px; border-radius:12px; cursor:pointer; font-weight:650;}
+    button.secondary{background:transparent; color:var(--text); border:1px solid var(--border); font-weight:600;}
+    button:disabled{opacity:.55; cursor:not-allowed;}
+    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+    .status{margin-top:10px; padding:10px 12px; border-radius:12px; border:1px solid var(--border); background:rgba(255,255,255,.02); font-size:12.5px; line-height:1.35;}
+    .status.ok{border-color:rgba(158,206,106,.35); background:rgba(158,206,106,.08);} 
+    .status.err{border-color:rgba(247,118,142,.35); background:rgba(247,118,142,.08);} 
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, Monaco, monospace; font-size:12px;}
+    .small{font-size:12px; color:var(--muted); line-height:1.35;}
+    .gallery{display:grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap:12px;}
+    .tile{border:1px solid var(--border); border-radius:14px; overflow:hidden; background:rgba(255,255,255,.02); cursor:pointer;}
+    .tile:hover{border-color:rgba(122,162,247,.55);}
+    .thumb{display:block; width:100%; aspect-ratio: 16/9; object-fit:cover; background:#070a10;}
+    .tile .meta{padding:8px 10px;}
+    .tile .name{font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+    .tile .sub{font-size:11.5px; color:var(--muted); margin-top:2px;}
+    .kv{display:grid; grid-template-columns: 165px 1fr; gap:8px 12px; font-size:12.5px; margin-top:10px;}
+    canvas{width:100%; border-radius:12px; border:1px solid var(--border); background:#0a0d15; image-rendering:crisp-edges;}
+    audio{width:100%; margin-top:10px;}
+    @media (max-width: 980px){ .grid{grid-template-columns:1fr;} .kv{grid-template-columns: 140px 1fr;} }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>StegSong</h1>
+    <p>
+      There is music hidden within each of these images. There are no music files stored on this server. All the sounds come from data hidden inside the images themselves. Click on any of the images to hear the music associated with it.
+    </p>
+  </header>
+
+  <main>
+    <div class="grid">
+      <div class="card">
+        <h2>Gallery</h2>
+
+        <div style="margin-top:14px;">
+          <div class="gallery" id="gallery"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Player</h2>
+        <div class="small">Select a tile to decode and play.</div>
+
+        <canvas id="canvas" width="1920" height="1080" style="margin-top:10px;"></canvas>
+
+        <audio id="audio" controls></audio>
+
+        <div class="kv">
+          <div class="k">Audio length</div><div class="v"><span class="mono" id="mp3Len">—</span></div>
+          <div class="k">LSB bytes</div><div class="v"><span class="mono" id="lsbLen">—</span></div>
+          <div class="k">Trailing bytes</div><div class="v"><span class="mono" id="trailLen">—</span></div>
+          <div class="k">SHA-256</div><div class="v"><span class="mono" id="sha">—</span></div>
+        </div>
+
+        <div class="row" style="margin-top:12px;">
+          <button id="downloadImg" disabled>Download image</button>
+          <button id="stop" class="secondary">Stop</button>
+        </div>
+
+        <div id="pstatus" class="status" style="display:none"></div>
+      </div>
+    </div>
+  </main>
+
+<script>
+(() => {
+  'use strict';
+
+  // --- Scheme constants (must match StegMP3)
+  const W = 1920, H = 1080;
+  const CHANNELS = 3;
+  const LSB_BITS = 4; // match StegMP3 encoder (4 LSB)
+  const LSB_CAPACITY_BYTES = Math.floor((W * H * CHANNELS * LSB_BITS) / 8);
+
+  const te = new TextEncoder();
+  const td = new TextDecoder();
+
+  const MAGIC = te.encode('STEGMP3\0'); // 8 bytes
+  const VERSION = 1;
+  const FIXED_HEADER_LEN = 8 + 1 + 1 + 2 + 4 + 4 + 4 + 32 + 2;
+
+  // --- DOM
+  const gallery = document.getElementById('gallery');
+
+  // Design-time gallery: edit this list.
+  // You can point at local files if you host them alongside this HTML, e.g. "./gallery/myimage.steg.png".
+  // NOTE: decoding requires fetch() access to the PNG bytes. On static hosting, that means same-origin URLs work.
+  // If you open this file directly via file://, browsers often block fetch for local paths. Prefer running a tiny local server.
+  const DESIGN_TIME_ITEMS = [
+  { name: "Rain In Canada", url: "./gallery/rain in canada.steg.png" },
+  { name: "Wind Is In From Africa", url: "./gallery/wind is in from africa.steg.png" },
+];
+
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const audio = document.getElementById('audio');
+  const downloadImg = document.getElementById('downloadImg');
+  const stop = document.getElementById('stop');
+  const pstatus = document.getElementById('pstatus');
+
+  const mp3LenEl = document.getElementById('mp3Len');
+  const lsbLenEl = document.getElementById('lsbLen');
+  const trailLenEl = document.getElementById('trailLen');
+  const shaEl = document.getElementById('sha');
+
+  // --- Helpers
+  function setStatus(el, msg, kind) {
+    el.style.display = 'block';
+    el.className = 'status ' + (kind || '');
+    el.textContent = msg;
+  }
+  function clearStatus(el) {
+    el.style.display = 'none';
+    el.textContent = '';
+    el.className = 'status';
+  }
+  function humanBytes(n) {
+    if (n === null || n === undefined) return '—';
+    const u = ['B','KB','MB','GB'];
+    let i=0, x=n;
+    while (x>=1024 && i<u.length-1) { x/=1024; i++; }
+    return `${x.toFixed(i===0?0:2)} ${u[i]} (${n} B)`;
+  }
+  function u32be(n){
+    const b = new Uint8Array(4);
+    b[0] = (n >>> 24) & 0xff;
+    b[1] = (n >>> 16) & 0xff;
+    b[2] = (n >>> 8) & 0xff;
+    b[3] = n & 0xff;
+    return b;
+  }
+  function readU16be(buf, off){ return (buf[off]<<8) | buf[off+1]; }
+  function readU32be(buf, off){ return (buf[off]*2**24) + (buf[off+1]<<16) + (buf[off+2]<<8) + buf[off+3]; }
+  function concatBytes(...arrs) {
+    const total = arrs.reduce((s,a)=>s + a.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const a of arrs) { out.set(a, off); off += a.length; }
+    return out;
+  }
+  async function sha256(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return new Uint8Array(digest);
+  }
+  function hex(bytes) { return Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join(''); }
+
+  function findPngEndOffset(pngBytes) {
+    const sig = [137,80,78,71,13,10,26,10];
+    for (let i=0;i<8;i++) if (pngBytes[i]!==sig[i]) throw new Error('Not a PNG (bad signature).');
+    let off = 8;
+    while (off + 12 <= pngBytes.length) {
+      const len = readU32be(pngBytes, off);
+      const type = String.fromCharCode(pngBytes[off+4], pngBytes[off+5], pngBytes[off+6], pngBytes[off+7]);
+      const chunkTotal = 12 + len;
+      if (off + chunkTotal > pngBytes.length) throw new Error('Corrupt PNG (chunk overrun).');
+      if (type === 'IEND') return off + chunkTotal;
+      off += chunkTotal;
+    }
+    throw new Error('Could not find IEND chunk.');
+  }
+
+  function extractLSBFromImageData(imageData, nBytes) {
+    const data = imageData.data;
+    const out = new Uint8Array(nBytes);
+
+    const bitsPerGroup = LSB_BITS;
+    const groupsPerByte = 8 / bitsPerGroup;
+    if (!Number.isInteger(groupsPerByte)) throw new Error('LSB_BITS must divide 8.');
+
+    const neededGroups = nBytes * groupsPerByte;
+    let groupCount = 0;
+
+    const mask = (1 << bitsPerGroup) - 1;
+    let curByte = 0;
+    let groupIndex = 0;
+
+    function pushGroup(v) {
+      const shift = 8 - bitsPerGroup - (groupIndex * bitsPerGroup);
+      curByte |= (v & mask) << shift;
+      groupIndex++;
+      if (groupIndex === groupsPerByte) {
+        out[(groupCount / groupsPerByte) | 0] = curByte;
+        curByte = 0;
+        groupIndex = 0;
+      }
+    }
+
+    for (let pix = 0; pix < W*H && groupCount < neededGroups; pix++) {
+      const base = pix * 4;
+      for (let c=0;c<3 && groupCount < neededGroups;c++) {
+        pushGroup(data[base+c] & mask);
+        groupCount++;
+      }
+    }
+
+    if (groupCount !== neededGroups) throw new Error('Failed to extract requested LSB bytes.');
+    return out;
+  }
+
+  async function loadPngBytesToCanvas(pngBytes) {
+    // Decode via createImageBitmap and draw 1:1 to avoid any scaling artifacts.
+    const blob = new Blob([pngBytes], { type: 'image/png' });
+    const bmp = await createImageBitmap(blob);
+    try {
+      if (bmp.width !== W || bmp.height !== H) {
+        throw new Error(`Encoded PNG must be exactly ${W}×${H}. Got ${bmp.width}×${bmp.height}.`);
+      }
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0,0,W,H);
+      ctx.drawImage(bmp, 0, 0);
+    } finally {
+      bmp.close?.();
+    }
+  }
+
+  function resetPlayerMeta(){
+    mp3LenEl.textContent = '—';
+    lsbLenEl.textContent = '—';
+    trailLenEl.textContent = '—';
+    shaEl.textContent = '—';
+    downloadImg.disabled = true;
+  }
+
+  let decodedAudioBytes = null;
+  let lastEncodedImageBytes = null;
+  let lastEncodedImageName = 'stegsong.png';
+
+  function setAudio(bytes, mime) {
+    if (audio.dataset.url) {
+      URL.revokeObjectURL(audio.dataset.url);
+      delete audio.dataset.url;
+    }
+    const blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
+    const u = URL.createObjectURL(blob);
+    audio.src = u;
+    audio.dataset.url = u;
+  }
+
+  function downloadBytes(bytes, filename, mime) {
+    const blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = u;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(u), 1500);
+  }
+
+  downloadImg.addEventListener('click', () => {
+    if (!lastEncodedImageBytes) return;
+    downloadBytes(lastEncodedImageBytes, lastEncodedImageName, 'image/png');
+  });
+
+  stop.addEventListener('click', () => { audio.pause(); audio.currentTime = 0; });
+
+  // --- Gallery items
+  const items = []; // { id, name, url|objectUrl, kind }
+
+  function addItemFromObjectUrl(objUrl, name) {
+    const id = crypto.randomUUID();
+    items.push({ id, name, objectUrl: objUrl, kind: 'objectUrl' });
+    renderGallery();
+  }
+
+  function addItemFromRemoteUrl(remoteUrl, nameOverride) {
+    const id = crypto.randomUUID();
+    const name = nameOverride || (remoteUrl.split('/').pop() || remoteUrl);
+    items.push({ id, name, url: remoteUrl, kind: 'remoteUrl' });
+    renderGallery();
+  }
+
+  function seedDesignTimeItems() {
+    for (const it of (DESIGN_TIME_ITEMS || [])) {
+      if (!it || !it.url) continue;
+      addItemFromRemoteUrl(it.url, it.name);
+    }
+  }
+
+  function clearGallery() {
+    // Revoke object URLs
+    for (const it of items) {
+      if (it.kind === 'objectUrl' && it.objectUrl) {
+        try { URL.revokeObjectURL(it.objectUrl); } catch {}
+      }
+    }
+    items.length = 0;
+    gallery.innerHTML = '';
+  }
+
+  function renderGallery() {
+    gallery.innerHTML = '';
+    for (const it of items) {
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.dataset.id = it.id;
+
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.alt = it.name;
+      img.loading = 'lazy';
+      img.src = it.kind === 'objectUrl' ? it.objectUrl : it.url;
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.innerHTML = `<div class="name">${escapeHtml(it.name)}</div><div class="sub">Click to decode & play</div>`;
+
+      tile.appendChild(img);
+      tile.appendChild(meta);
+      tile.addEventListener('click', () => playItem(it).catch(e => {
+        setStatus(pstatus, e.message || String(e), 'err');
+      }));
+
+      gallery.appendChild(tile);
+    }
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function fetchBytesForItem(it) {
+    // Build an absolute, properly-encoded URL (helps when filenames contain spaces, #, ?, etc.)
+    const resolvedUrl = (it.kind === 'objectUrl')
+      ? it.objectUrl
+      : new URL(it.url, window.location.href).toString();
+
+    try {
+      const r = await fetch(resolvedUrl, it.kind === 'remoteUrl' ? { mode: 'cors' } : undefined);
+      if (!r.ok) throw new Error(`HTTP ${r.status} for ${resolvedUrl}`);
+      return new Uint8Array(await r.arrayBuffer());
+    } catch (e) {
+      // fetch() throws TypeError("Failed to fetch") for invalid URLs, blocked requests, etc.
+      throw new Error(`Failed to fetch: ${resolvedUrl}`);
+    }
+  }
+
+  async function decodeStegMp3FromPngBytes(allBytes) {
+    const endOff = findPngEndOffset(allBytes);
+    const pngOnly = allBytes.slice(0, endOff);
+    const trailing = allBytes.slice(endOff);
+
+    await loadPngBytesToCanvas(pngOnly);
+    const imageData = ctx.getImageData(0,0,W,H);
+
+    const minHdr = extractLSBFromImageData(imageData, FIXED_HEADER_LEN);
+    for (let i=0;i<8;i++) if (minHdr[i] !== MAGIC[i]) throw new Error('Magic mismatch. Not a StegMP3 image.');
+    const ver = minHdr[8];
+    if (ver !== VERSION) throw new Error(`Unsupported version: ${ver}`);
+    const headerLen = readU16be(minHdr, 10);
+    if (headerLen < FIXED_HEADER_LEN || headerLen > LSB_CAPACITY_BYTES) throw new Error('Invalid headerLen.');
+
+    const header = extractLSBFromImageData(imageData, headerLen);
+    const mp3Len = readU32be(header, 12);
+    const lsbMp3Len = readU32be(header, 16);
+    const trailLen = readU32be(header, 20);
+    const storedSha = header.slice(24, 56);
+
+    const nameLen = readU16be(header, 56);
+    const nameStart = FIXED_HEADER_LEN;
+    const nameEnd = nameStart + nameLen;
+    if (nameEnd !== headerLen) throw new Error('Header filename length mismatch.');
+
+    if (lsbMp3Len > (LSB_CAPACITY_BYTES - headerLen)) throw new Error('Invalid lsbMp3Len.');
+    if (lsbMp3Len + trailLen !== mp3Len) throw new Error('Length mismatch in header.');
+    if (trailing.length < trailLen) throw new Error(`Trailing data too short. Expected ${trailLen} bytes, got ${trailing.length}.`);
+
+    const lsbTotal = headerLen + lsbMp3Len;
+    const lsbAll = extractLSBFromImageData(imageData, lsbTotal);
+    const lsbMp3 = lsbAll.slice(headerLen);
+
+    const mp3 = concatBytes(lsbMp3, trailing.slice(0, trailLen));
+    if (mp3.length !== mp3Len) throw new Error('MP3 length mismatch after reconstruction.');
+
+    const gotSha = await sha256(mp3);
+    if (hex(gotSha) !== hex(storedSha)) throw new Error('SHA-256 verification failed (image likely modified).');
+
+    return { mp3Len, lsbMp3Len, trailLen, shaHex: hex(storedSha), audioBytes: mp3, audioMime: 'audio/mpeg' };
+  }
+
+  async function playItem(it) {
+    clearStatus(pstatus);
+    resetPlayerMeta();
+    decodedAudioBytes = null;
+    lastEncodedImageBytes = null;
+
+    setStatus(pstatus, `Loading...`, '');
+    const allBytes = await fetchBytesForItem(it);
+    // Store the exact fetched bytes so the download preserves trailing payload.
+    lastEncodedImageBytes = allBytes;
+    lastEncodedImageName = (it.name || 'stegsong')
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\.+$/, '')
+      + '.png';
+
+    setStatus(pstatus, `Decoding...`, '');
+    const res = await decodeStegMp3FromPngBytes(allBytes);
+
+    decodedAudioBytes = res.audioBytes;
+
+    mp3LenEl.textContent = humanBytes(res.mp3Len);
+    lsbLenEl.textContent = humanBytes(res.lsbMp3Len);
+    trailLenEl.textContent = humanBytes(res.trailLen);
+    shaEl.textContent = res.shaHex;
+
+    setAudio(res.audioBytes, res.audioMime);
+    downloadImg.disabled = false;
+
+    try {
+      await audio.play();
+      setStatus(pstatus, `Playing.`, 'ok');
+    } catch {
+      setStatus(pstatus, `Decoded. Press play to start audio (browser autoplay policy).`, 'ok');
+    }
+  }
+
+  // Initialize
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0,0,W,H);
+  resetPlayerMeta();
+  updateHint();
+  seedDesignTimeItems();
+
+  function updateHint(){
+    // left panel is intentionally minimal
+  }
+
+})();
+</script>
+</body>
+</html>
