@@ -1,6 +1,6 @@
 ﻿# StegSong (StegMP3 Gallery)
 
-StegSong is a static gallery website that displays **MP3â€‘encoded PNG images** and plays the hidden audio directly in the browser.
+StegSong is a static gallery website that displays **MP3 files encoded PNG images** and plays the hidden audio directly in the browser.
 
 It is designed to work with images produced by the StegMP3 encoder.
 
